@@ -19,7 +19,6 @@ from app.models.audit_event import AuditEvent
 
 # Models that depend on Project
 from app.models.document import Document
-from app.models.commitment import Commitment
 from app.models.access_grant import AccessGrant
 from app.models.allocation import Allocation
 
@@ -35,7 +34,7 @@ __all__ = [
     "User",
     "Project",
     "Document",
-    "Commitment",
+
     "AccessGrant",
     "Allocation",
     "SettlementLog",
