@@ -2,7 +2,7 @@ from fastapi import APIRouter
 from app.api.v1.endpoints import users
 
 
-from app.api.v1.endpoints import documents, commitments, projects, master, auth, invitations, user_roles, organizations
+from app.api.v1.endpoints import documents, projects, master, auth, invitations, user_roles, organizations
 
 api_router = APIRouter()
 
@@ -13,5 +13,4 @@ api_router.include_router(user_roles.router, prefix="/user-roles", tags=["user-r
 api_router.include_router(organizations.router, prefix="/organizations", tags=["organizations"])
 api_router.include_router(master.router, prefix="/master", tags=["master"])
 api_router.include_router(documents.router, prefix="/documents", tags=["documents"])
-api_router.include_router(commitments.router, prefix="/commitments", tags=["commitments"])
 api_router.include_router(projects.router, prefix="/projects", tags=["projects"])
