@@ -33,6 +33,78 @@ def create_user_in_perdix(payload: dict) -> tuple:
     except ValueError:
         return response.text, response.status_code, False
 
+def get_user_from_perdix_by_login(login: str) -> tuple:
+    """Get single user details from Perdix by login/username"""
+    base_url = settings.PERDIX_BASE_URL.rstrip("/")
+    url = f"{base_url}/api/users/{login}"
+
+    if not settings.PERDIX_JWT:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Perdix JWT is not configured")
+
+    headers = {
+        "accept": "application/json, text/plain, */*",
+        "accept-language": "en-US,en;q=0.9,hi;q=0.8",
+        "authorization": f"JWT {settings.PERDIX_JWT}",
+        "page_uri": settings.PERDIX_PAGE_URI or "Page/Engine/user.UserMaintanence",
+        "priority": "u=1, i",
+        "referer": f"{settings.PERDIX_ORIGIN}/perdix-client/",
+        "sec-ch-ua": "\"Google Chrome\";v=\"141\", \"Not?A_Brand\";v=\"8\", \"Chromium\";v=\"141\"",
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": "\"Windows\"",
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+        "origin": settings.PERDIX_ORIGIN,
+    }
+
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.get(url, headers=headers)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
+    try:
+        return response.json(), response.status_code, True
+    except ValueError:
+        return response.text, response.status_code, False
+
+def update_user_in_perdix(payload: dict) -> tuple:
+    """Update user details in Perdix using maintenance endpoint (PUT /api/users)"""
+    base_url = settings.PERDIX_BASE_URL.rstrip("/")
+    url = f"{base_url}/api/users"
+
+    if not settings.PERDIX_JWT:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Perdix JWT is not configured")
+
+    headers = {
+        "accept": "application/json, text/plain, */*",
+        "accept-language": "en-US,en;q=0.9,hi;q=0.8",
+        "authorization": f"JWT {settings.PERDIX_JWT}",
+        "content-type": "application/json;charset=UTF-8",
+        "origin": settings.PERDIX_ORIGIN,
+        "page_uri": settings.PERDIX_PAGE_URI or "Page/Engine/user.UserMaintanence",
+        "priority": "u=1, i",
+        "referer": f"{settings.PERDIX_ORIGIN}/perdix-client/",
+        "sec-ch-ua": "\"Google Chrome\";v=\"141\", \"Not?A_Brand\";v=\"8\", \"Chromium\";v=\"141\"",
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": "\"Windows\"",
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    }
+
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.put(url, headers=headers, json=payload)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
+    try:
+        return response.json(), response.status_code, True
+    except ValueError:
+        return response.text, response.status_code, False
 
 def update_user_roles_in_perdix(user_payload: dict) -> tuple:
     base_url = settings.PERDIX_BASE_URL.rstrip("/")

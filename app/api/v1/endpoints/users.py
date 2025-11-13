@@ -7,7 +7,7 @@ from app.models.user import User as UserModel
 from app.models.party import Party as PartyModel
 from passlib.context import CryptContext
 from app.core.config import settings
-from app.services.user_service import register_user_with_optional_roles, get_users_from_perdix
+from app.services.user_service import register_user_with_optional_roles, get_users_from_perdix, get_user_from_perdix_by_login, update_user_in_perdix
 from fastapi.responses import JSONResponse
 
 router = APIRouter()
@@ -52,6 +52,46 @@ def get_perdix_users(
         "message": "Users fetched from Perdix successfully",
         "data": body if is_json else {"raw": body}
     }
+
+@router.get("/perdix/{login}", status_code=status.HTTP_200_OK)
+def get_perdix_user_by_login(login: str):
+    """Get single user details from Perdix by login/username"""
+    body, status_code, is_json = get_user_from_perdix_by_login(login)
+
+    if status_code != 200:
+        raise HTTPException(
+            status_code=status_code,
+            detail=body if isinstance(body, str) else body.get("message", "Failed to fetch user from Perdix")
+        )
+
+    return {
+        "status": "success",
+        "message": "User fetched from Perdix successfully",
+        "data": body if is_json else {"raw": body}
+    }
+
+@router.get("/perdix/userid/{userid}", status_code=status.HTTP_200_OK)
+def get_perdix_user_by_userid(userid: str):
+    """Alias: Get Perdix user by userId (mapped to login)"""
+    body, status_code, is_json = get_user_from_perdix_by_login(userid)
+
+    if status_code != 200:
+        raise HTTPException(
+            status_code=status_code,
+            detail=body if isinstance(body, str) else body.get("message", "Failed to fetch user from Perdix")
+        )
+
+    return {
+        "status": "success",
+        "message": "User fetched from Perdix successfully",
+        "data": body if is_json else {"raw": body}
+    }
+
+@router.put("/perdix", status_code=status.HTTP_200_OK)
+def update_perdix_user(payload: dict):
+    """Forward user update to Perdix (PUT /api/users)"""
+    body, status_code, is_json = update_user_in_perdix(payload)
+    return JSONResponse(content=body if is_json else {"raw": body}, status_code=status_code)
 
 @router.get("/{user_id}", response_model=UserAndPartyResponse, status_code=status.HTTP_200_OK)
 def get_user(user_id: int, db: Session = Depends(get_db)):
