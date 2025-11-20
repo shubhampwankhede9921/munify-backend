@@ -9,6 +9,7 @@ This ensures all models are loaded before SQLAlchemy initializes mappers.
 # Standalone models
 from app.models.invitation import Invitation
 from app.models.project import Project
+from app.models.project_draft import ProjectDraft
 from app.models.project_category_master import ProjectCategoryMaster
 from app.models.project_stage_master import ProjectStageMaster
 
