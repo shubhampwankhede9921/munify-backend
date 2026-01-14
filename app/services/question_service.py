@@ -42,12 +42,12 @@ class QuestionService:
                 detail=f"Cannot answer a question in '{question.status}' status",
             )
 
-    def create_question(self, data: QuestionCreate, user_id: Optional[str] = None) -> Question:
+    def create_question(self, data: QuestionCreate, username: Optional[str] = None) -> Question:
         """Create a new question for a project."""
         logger.info(
             "Creating question for project %s by %s",
             data.project_id,
-            user_id or data.asked_by,
+            username or data.asked_by,
         )
 
         try:
@@ -55,10 +55,10 @@ class QuestionService:
             self._validate_project_exists(data.project_id)
 
             question_dict = data.model_dump(exclude_unset=True)
-            # Use user_id from auth context if provided, otherwise fall back to asked_by from request
-            if user_id:
-                question_dict["asked_by"] = user_id
-                question_dict["created_by"] = user_id
+            # Use username from auth context if provided, otherwise fall back to asked_by from request
+            if username:
+                question_dict["asked_by"] = username
+                question_dict["created_by"] = username
             # Ensure default values consistent with DB defaults
             if "status" not in question_dict or question_dict["status"] is None:
                 question_dict["status"] = "open"
@@ -94,11 +94,16 @@ class QuestionService:
         priority: Optional[str] = None,
         skip: int = 0,
         limit: int = 50,
+        current_username: Optional[str] = None,
     ) -> Tuple[List[Question], int]:
         """List questions with optional filters and pagination.
         
         Can filter by project_id (project_reference_id) and/or organization_id.
         If project_id is provided, validates that the project exists.
+        Private replies are filtered out unless current_username is the author.
+        
+        Args:
+            current_username: Current user's username to check if they can view private replies
         """
         # Validate project exists if project_id is provided
         if project_id:
@@ -142,11 +147,38 @@ class QuestionService:
             .limit(limit)
             .all()
         )
+        
+        # Filter: Only show public replies, OR private replies if user is the author
+        # This ensures only "public" status replies are visible to other users
+        for question in questions:
+            if question.answer:
+                # Only show public replies to all users
+                # OR show private replies only if current_username is the author
+                if question.answer.reply_status == "private":
+                    # Private reply: only visible to author
+                    reply_author = question.answer.replied_by_user_id
+                    if not current_username or reply_author != current_username:
+                        # Hide private reply from non-authors - only public replies should be visible
+                        logger.debug(
+                            "Filtering out private reply for question %s (author: %s, viewer: %s)",
+                            question.id,
+                            reply_author,
+                            current_username
+                        )
+                        question.answer = None
+                # If reply_status is "public", it's visible to everyone (no filtering needed)
 
         return questions, total
 
-    def get_question(self, project_id: str, question_id: int) -> Question:
-        """Get a single question for a project, including its answer and documents."""
+    def get_question(self, project_id: str, question_id: int, current_username: Optional[str] = None) -> Question:
+        """
+        Get a single question for a project, including its answer and documents.
+        
+        Args:
+            project_id: Project reference ID
+            question_id: Question ID
+            current_username: Current user's username to check if they can view private replies
+        """
         self._validate_project_exists(project_id)
 
         question = (
@@ -162,6 +194,13 @@ class QuestionService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Question with ID {question_id} not found for project '{project_id}'",
             )
+        
+        # Filter out private replies unless user is the author
+        if question.answer and question.answer.reply_status == "private":
+            if not current_username or question.answer.replied_by_user_id != current_username:
+                # Remove private answer from response
+                question.answer = None
+        
         return question
 
     def update_question(
@@ -169,7 +208,7 @@ class QuestionService:
         project_id: str,
         question_id: int,
         data: QuestionUpdate,
-        user_id: Optional[str] = None,
+        user_id: Optional[str] = None,  # Actually stores username now
     ) -> Question:
         """Update question fields (e.g., text, category, priority, status).
 
@@ -184,7 +223,7 @@ class QuestionService:
             )
 
         update_dict = data.model_dump(exclude_unset=True)
-        # Set updated_by from auth context if provided
+        # Set updated_by from auth context if provided (stores username)
         if user_id:
             question.updated_by = user_id
         
@@ -333,10 +372,11 @@ class QuestionService:
         self,
         project_id: str,
         question_id: int,
-        replied_by_user_id: str,
+        replied_by_username: str,
         reply_text: str,
         organization_id: Optional[str] = None,
         files: Optional[List[UploadFile]] = None,
+        is_draft: bool = False,
     ) -> Question:
         """
         Create an answer for a question.
@@ -346,19 +386,33 @@ class QuestionService:
         Args:
             project_id: Project reference ID
             question_id: Question ID
-            replied_by_user_id: User ID providing the answer
+            replied_by_username: Username of the user providing the answer
             reply_text: Answer text
             organization_id: Organization ID (auto-fetched from project if not provided and files are uploaded)
             files: Optional list of files to upload
+            is_draft: If True, saves as draft (private), if False, publishes (public)
         """
         question = self.get_question(project_id, question_id)
         self._validate_question_status_for_answer(question)
 
+        # Check if answer exists - allow update if it's a draft by the same user
         if question.answer:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Question already has an answer",
-            )
+            if question.answer.reply_status == "private" and question.answer.replied_by_user_id == replied_by_username:
+                # Allow updating existing draft
+                return self.update_answer(
+                    project_id=project_id,
+                    question_id=question_id,
+                    replied_by_username=replied_by_username,
+                    reply_text=reply_text,
+                    organization_id=organization_id,
+                    files=files,
+                    is_draft=is_draft,
+                )
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Question already has an answer",
+                )
         
         # Fetch organization_id from project if not provided and files are being uploaded
         if files and not organization_id:
@@ -371,12 +425,16 @@ class QuestionService:
             )
 
         try:
+            # Determine reply status based on is_draft
+            reply_status = "private" if is_draft else "public"
+            
             # Create answer first to get the ID
             answer = QuestionReply(
                 question_id=question.id,
-                replied_by_user_id=replied_by_user_id,
+                replied_by_user_id=replied_by_username,  # Store username
                 reply_text=reply_text,
-                created_by=replied_by_user_id,
+                reply_status=reply_status,
+                created_by=replied_by_username,  # Store username
             )
             self.db.add(answer)
             self.db.flush()  # Get the ID without committing
@@ -388,16 +446,17 @@ class QuestionService:
                     files=files,
                     organization_id=organization_id,
                     project_reference_id=project_id,
-                    uploaded_by=replied_by_user_id,
+                    uploaded_by=replied_by_username,  # Store username
                 )
 
-            # Update question status to answered
-            question.status = "answered"
+            # Update question status to answered only if reply is public
+            if reply_status == "public":
+                question.status = "answered"
 
             self.db.commit()
             self.db.refresh(question)
             # Reload with documents
-            question = self.get_question(project_id, question_id)
+            question = self.get_question(project_id, question_id, current_username=replied_by_username)
             return question
         except HTTPException:
             self.db.rollback()
@@ -416,10 +475,11 @@ class QuestionService:
         self,
         project_id: str,
         question_id: int,
-        replied_by_user_id: str,
+        replied_by_username: str,
         reply_text: str,
         organization_id: Optional[str] = None,
         files: Optional[List[UploadFile]] = None,
+        is_draft: bool = False,
     ) -> Question:
         """
         Update existing answer for a question.
@@ -429,12 +489,13 @@ class QuestionService:
         Args:
             project_id: Project reference ID
             question_id: Question ID
-            replied_by_user_id: User ID updating the answer
+            replied_by_username: Username of the user updating the answer
             reply_text: Updated answer text
             organization_id: Organization ID (auto-fetched from project if not provided and files are uploaded)
             files: Optional list of files to upload (replaces existing documents)
+            is_draft: If True, saves as draft (private), if False, publishes (public)
         """
-        question = self.get_question(project_id, question_id)
+        question = self.get_question(project_id, question_id, current_username=replied_by_username)
         if not question.answer:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -444,10 +505,10 @@ class QuestionService:
         answer = question.answer
 
         # Optionally, enforce that only the same user can update
-        if replied_by_user_id != answer.replied_by_user_id:
+        if replied_by_username != answer.replied_by_user_id:
             logger.warning(
                 "User %s attempted to update answer %s owned by %s",
-                replied_by_user_id,
+                replied_by_username,
                 answer.id,
                 answer.replied_by_user_id,
             )
@@ -463,16 +524,21 @@ class QuestionService:
             )
 
         try:
-            # Update reply text
+            # Determine new reply status
+            new_reply_status = "private" if is_draft else "public"
+            old_reply_status = answer.reply_status
+            
+            # Update reply text and status
             answer.reply_text = reply_text
-            answer.updated_by = replied_by_user_id
+            answer.reply_status = new_reply_status
+            answer.updated_by = replied_by_username  # Store username
             
             # If files are provided, replace existing documents
             if files is not None:
                 # Delete existing documents
                 self._delete_existing_documents(
                     question_reply_id=answer.id,
-                    deleted_by=replied_by_user_id,
+                    deleted_by=replied_by_username,  # Store username
                 )
                 
                 # Upload and link new documents
@@ -482,12 +548,21 @@ class QuestionService:
                         files=files,
                         organization_id=organization_id,
                         project_reference_id=project_id,
-                        uploaded_by=replied_by_user_id,
+                        uploaded_by=replied_by_username,  # Store username
                     )
+
+            # Update question status based on reply status change
+            if old_reply_status == "private" and new_reply_status == "public":
+                # Draft was published - mark question as answered
+                question.status = "answered"
+            elif old_reply_status == "public" and new_reply_status == "private":
+                # Published answer was changed back to draft - keep question status as is
+                # (don't change it back to "open" as it was already answered)
+                pass
 
             self.db.commit()
             # Reload with documents
-            question = self.get_question(project_id, question_id)
+            question = self.get_question(project_id, question_id, current_username=replied_by_username)
             return question
         except HTTPException:
             self.db.rollback()
@@ -556,7 +631,7 @@ class QuestionService:
         self,
         project_id: str,
         question_id: int,
-        replied_by_user_id: str,
+        replied_by_username: str,
     ) -> Question:
         """
         Delete the answer for a question.
@@ -574,10 +649,10 @@ class QuestionService:
         answer = question.answer
 
         # Optionally enforce that only the same user can delete their answer
-        if replied_by_user_id != answer.replied_by_user_id:
+        if replied_by_username != answer.replied_by_user_id:
             logger.warning(
                 "User %s attempted to delete answer %s owned by %s",
-                replied_by_user_id,
+                replied_by_username,
                 answer.id,
                 answer.replied_by_user_id,
             )

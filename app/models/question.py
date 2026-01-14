@@ -18,6 +18,7 @@ class Question(Base):
     # Reference to project by project_reference_id
     project_id = Column(String(255), ForeignKey("perdix_mp_projects.project_reference_id"), nullable=False)
 
+    # Store username of the user who asked the question
     asked_by = Column(String(255), nullable=False)
     question_text = Column(Text, nullable=False)
     category = Column(String(100), nullable=True)
@@ -52,10 +53,12 @@ class QuestionReply(Base):
     id = Column(BigInteger, primary_key=True, index=True)
 
     question_id = Column(BigInteger, ForeignKey("perdix_mp_questions.id", ondelete="CASCADE"), nullable=False, unique=True)
-    # Store user identifier as string (username/user_id) to match asked_by field in questions
+    # Store username of the user who replied (to match asked_by field in questions)
     replied_by_user_id = Column(String(255), nullable=False)
 
     reply_text = Column(Text, nullable=False)
+    # Reply status: "private" (draft) or "public" (published/final)
+    reply_status = Column(String(20), nullable=False, server_default="private")
 
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=True)
     created_by = Column(String(255), nullable=True)

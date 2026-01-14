@@ -7,7 +7,7 @@ from app.schemas.file import FileResponse
 
 class QuestionCreate(BaseModel):
     project_id: str = Field(..., description="Project reference ID this question is associated with")
-    asked_by: str = Field(..., max_length=255, description="Identifier of the user (lender) asking the question")
+    asked_by: str = Field(..., max_length=255, description="Username of the user (lender) asking the question")
     question_text: str = Field(..., description="Question text")
     category: Optional[str] = Field(None, max_length=100, description="Category of the question (financial, compliance, timeline, etc.)")
     priority: Optional[str] = Field("normal", max_length=20, description="Priority of the question: low, normal, high, urgent")
@@ -42,8 +42,9 @@ class QuestionReplyDocumentResponse(BaseModel):
 class QuestionAnswerResponse(BaseModel):
     id: int
     question_id: int
-    replied_by_user_id: str
+    replied_by_user_id: str = Field(..., description="Username of the user who replied")
     reply_text: str
+    reply_status: str = Field(..., description="Reply status: 'private' (draft) or 'public' (published)")
     documents: List[QuestionReplyDocumentResponse] = Field(default_factory=list)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

@@ -1,9 +1,9 @@
 from typing import Optional, List, Union
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Form, File, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Form, File, UploadFile, Request
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.auth import get_current_user, CurrentUser
+from app.core.auth import get_current_user, CurrentUser, get_user_from_request_state
 from app.schemas.question import (
     QuestionCreate,
     QuestionUpdate,
@@ -41,7 +41,9 @@ def create_question(
     """
     try:
         service = QuestionService(db)
-        question = service.create_question(question_data, user_id=current_user.user_id)
+        # Use username from current_user, fallback to user_id if username not available
+        username = current_user.username or current_user.user_id
+        question = service.create_question(question_data, username=username)
         question_response = QuestionResponse.model_validate(question)
         return {
             "status": "success",
@@ -95,6 +97,7 @@ def list_questions(
             priority=priority,
             skip=skip,
             limit=limit,
+            current_username=current_user.username or current_user.user_id,
         )
         questions_response = [
             QuestionResponse.model_validate(question) for question in questions
@@ -120,6 +123,7 @@ def list_questions(
 def get_question(
     question_id: int,
     project_id: str = Query(..., description="Project reference ID this question belongs to"),
+    request: Request = None,
     db: Session = Depends(get_db),
 ):
     """
@@ -127,10 +131,21 @@ def get_question(
     
     The response includes all documents associated with the answer (if any).
     Each document includes full file metadata.
+    Private (draft) replies are only visible to the user who created them.
     """
     try:
         service = QuestionService(db)
-        question = service.get_question(project_id=project_id, question_id=question_id)
+        # Try to get current user from request state (set by middleware)
+        current_username = None
+        try:
+            if request:
+                user = get_user_from_request_state(request)
+                if user:
+                    current_username = user.username or user.user_id
+        except:
+            pass  # If request is not available or user not found, continue without user context
+        
+        question = service.get_question(project_id=project_id, question_id=question_id, current_username=current_username)
         question_response = QuestionResponse.model_validate(question)
         return {
             "status": "success",
@@ -161,8 +176,9 @@ def update_question(
     """
     try:
         service = QuestionService(db)
+        username = current_user.username or current_user.user_id
         question = service.update_question(
-            project_id=project_id, question_id=question_id, data=question_data, user_id=current_user.user_id
+            project_id=project_id, question_id=question_id, data=question_data, user_id=username
         )
         question_response = QuestionResponse.model_validate(question)
         return {
@@ -187,6 +203,7 @@ def answer_question(
     reply_text: str = Form(..., description="Answer text provided by municipality"),
     project_id: str = Query(..., description="Project reference ID this question belongs to"),
     organization_id: Optional[str] = Query(None, description="Organization ID (auto-fetched from project if not provided and files are uploaded)"),
+    is_draft: bool = Form(False, description="If True, saves as draft (private). If False, publishes the answer (public)"),
     files: Union[UploadFile, List[UploadFile], None] = File(None, description="Optional file(s) to upload (single file or list)"),
     current_user: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -197,6 +214,11 @@ def answer_question(
     **User Identification:**
     - User is automatically extracted from JWT token in Authorization header
     - Falls back to user_id header for backward compatibility
+    
+    **Draft Functionality:**
+    - Set `is_draft=True` to save as draft (private) - only visible to the author
+    - Set `is_draft=False` to publish (public) - visible to all users
+    - If a draft already exists, it will be updated instead of creating a new one
     
     **Document Upload:**
     - Documents are optional
@@ -210,13 +232,15 @@ def answer_question(
         
         
         service = QuestionService(db)
+        username = current_user.username or current_user.user_id
         question = service.answer_question(
             project_id=project_id,
             question_id=question_id,
-            replied_by_user_id=current_user.user_id,  # ✅ From auth context
+            replied_by_username=username,  # ✅ Store username from auth context
             reply_text=reply_text,
             organization_id=organization_id,
             files=normalized_files,
+            is_draft=is_draft,
         )
         question_response = QuestionResponse.model_validate(question)
         return {
@@ -241,6 +265,7 @@ def update_answer(
     reply_text: str = Form(..., description="Updated answer text provided by municipality"),
     project_id: str = Query(..., description="Project reference ID this question belongs to"),
     organization_id: Optional[str] = Query(None, description="Organization ID (auto-fetched from project if not provided and files are uploaded)"),
+    is_draft: bool = Form(False, description="If True, saves as draft (private). If False, publishes the answer (public)"),
     files: Union[UploadFile, List[UploadFile], None] = File(None, description="Optional file(s) to upload (replaces existing documents, single file or list)"),
     current_user: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -251,6 +276,11 @@ def update_answer(
     **User Identification:**
     - User is automatically extracted from JWT token in Authorization header
     - Falls back to user_id header for backward compatibility
+    
+    **Draft Functionality:**
+    - Set `is_draft=True` to save as draft (private) - only visible to the author
+    - Set `is_draft=False` to publish (public) - visible to all users
+    - When changing from draft to published, the question status is updated to "answered"
     
     **Document Update:**
     - Documents are optional
@@ -266,13 +296,15 @@ def update_answer(
         normalized_files = _normalize_files(files)
         
         service = QuestionService(db)
+        username = current_user.username or current_user.user_id
         question = service.update_answer(
             project_id=project_id,
             question_id=question_id,
-            replied_by_user_id=current_user.user_id,  # ✅ From auth context
+            replied_by_username=username,  # ✅ Store username from auth context
             reply_text=reply_text,
             organization_id=organization_id,
             files=normalized_files,
+            is_draft=is_draft,
         )
         question_response = QuestionResponse.model_validate(question)
         return {
@@ -311,10 +343,11 @@ def delete_question(
     """
     try:
         service = QuestionService(db)
+        username = current_user.username or current_user.user_id
         service.delete_question(
             project_id=project_id,
             question_id=question_id,
-            requested_by=current_user.user_id,  # ✅ From auth context
+            requested_by=username,  # ✅ Store username from auth context
         )
         return {
             "status": "success",
@@ -349,10 +382,11 @@ def delete_answer(
     """
     try:
         service = QuestionService(db)
+        username = current_user.username or current_user.user_id
         question = service.delete_answer(
             project_id=project_id,
             question_id=question_id,
-            replied_by_user_id=current_user.user_id,  # ✅ From auth context
+            replied_by_username=username,  # ✅ Store username from auth context
         )
         question_response = QuestionResponse.model_validate(question)
         return {
